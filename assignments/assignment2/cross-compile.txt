@@ -1,0 +1,2 @@
+mkdir -p assignments/assignment2
+aarch64-none-linux-gnu-gcc -print-sysroot -v > assignments/assignment2/cross-compile.txt 2>&1
