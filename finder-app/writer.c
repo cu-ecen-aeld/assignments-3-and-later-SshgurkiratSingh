@@ -12,14 +12,16 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Usage: %s <string> <file>\n", argv[0]);
         return EXIT_FAILURE;
     }
-    FILE *f = fopen(argv[2], "w");
+    FILE *f = fopen(argv[1], "w");
     if (f == NULL)
     {
+        
         syslog(LOG_ERR, "Failed to open file %s", argv[2]);
         perror("fopen");
         return EXIT_FAILURE;
     }
-    fprintf(f, "%s", argv[1]);
+    
+    fprintf(f, "%s", argv[2]);
     syslog(LOG_INFO, "Writing %s to %s", argv[1], argv[2]);
     fclose(f);
     return EXIT_SUCCESS;
