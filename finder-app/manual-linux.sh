@@ -30,7 +30,7 @@ cd "$OUTDIR"
 if [ ! -x "${CROSS_COMPILE}gcc" ]; then
     echo "GCC compiler not found or not executable at ${CROSS_COMPILE}gcc"
 
-    ls /home/gurkirat/Documents
+    ls /home
     exit 1
 fi
 ${CROSS_COMPILE}gcc --version
