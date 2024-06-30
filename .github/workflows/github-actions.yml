@@ -9,15 +9,13 @@ on:
 
 jobs:
   unit-test:
+    container: cuaesd/aesd-autotest:unit-test
     runs-on: self-hosted
     steps:
       - name: Checkout repository
         uses: actions/checkout@v2
-
-      - name: Set up environment variables
-        run: |
-          export CROSS_COMPILE=/home/gurkirat/Documents/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu/bin/aarch64-none-linux-gnu-
-          echo "CROSS_COMPILE set to $CROSS_COMPILE"
+        with:
+          submodules: true
 
       - name: Ensure script is executable
         run: chmod +x ./unit-test.sh
@@ -27,15 +25,13 @@ jobs:
         shell: bash # Specify the shell if needed
 
   full-test:
+    container: cuaesd/aesd-autotest:assignment3
     runs-on: self-hosted
     steps:
       - name: Checkout repository
         uses: actions/checkout@v2
-
-      - name: Set up environment variables
-        run: |
-          export CROSS_COMPILE=/home/gurkirat/Documents/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu/bin/aarch64-none-linux-gnu-
-          echo "CROSS_COMPILE set to $CROSS_COMPILE"
+        with:
+          submodules: true
 
       - name: Ensure script is executable
         run: chmod +x ./full-test.sh
