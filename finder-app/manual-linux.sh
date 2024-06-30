@@ -12,8 +12,9 @@ KERNEL_REPO=git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.gi
 KERNEL_VERSION=v5.1.10
 BUSYBOX_VERSION=1_33_1
 FINDER_APP_DIR=$(realpath $(dirname $0))
+
 ARCH=arm64
-CROSS_COMPILE=/home/gurkirat/Documents/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu/bin/aarch64-none-linux-gnu-
+CROSS_COMPILE=aarch64-none-linux-gnu-
 
 # Check if output directory is provided as argument
 if [ $# -ge 1 ]; then
@@ -27,12 +28,12 @@ mkdir -p ${OUTDIR}
 cd "$OUTDIR"
 
 # Verify GCC path and availability
-if [ ! -x "${CROSS_COMPILE}gcc" ]; then
-    echo "GCC compiler not found or not executable at ${CROSS_COMPILE}gcc"
-
-    ls /home
+GCC_PATH=$(which aarch64-none-linux-gnu-gcc)
+if [ -z "$GCC_PATH" ]; then
+    echo "Cross-compiler not found in PATH. Please ensure it's installed and in your PATH."
     exit 1
 fi
+CROSS_COMPILE=$(dirname "$GCC_PATH")/aarch64-none-linux-gnu-
 ${CROSS_COMPILE}gcc --version
 
 # Clone Linux kernel repository if not already cloned
