@@ -114,10 +114,46 @@ if [ ! -d "${SYSROOT}" ]; then
     exit 1
 fi
 
-cp -L ${SYSROOT}/lib/ld-linux-aarch64.so.1 ${OUTDIR}/rootfs/lib
-cp -L ${SYSROOT}/lib64/libm.so.6 ${OUTDIR}/rootfs/lib64
-cp -L ${SYSROOT}/lib64/libresolv.so.2 ${OUTDIR}/rootfs/lib64
-cp -L ${SYSROOT}/lib64/libc.so.6 ${OUTDIR}/rootfs/lib64
+
+# Define sysroot and search for libraries
+SYSROOT=$(${CROSS_COMPILE}gcc -print-sysroot)
+INTERPRETER=$(find ${SYSROOT} -name "ld-linux-aarch64.so.1" -type f -print -quit)
+SHARED_LIB_1=$(find ${SYSROOT} -name "libm.so.6" -type f -print -quit)
+SHARED_LIB_2=$(find ${SYSROOT} -name "libresolv.so.2" -type f -print -quit)
+SHARED_LIB_3=$(find ${SYSROOT} -name "libc.so.6" -type f -print -quit)
+
+# Copy libraries to rootfs
+if [ -n "${INTERPRETER}" ]; then
+    cp "${INTERPRETER}" "${OUTDIR}/rootfs/lib"
+    cp "${INTERPRETER}" "${OUTDIR}/rootfs/home"
+else
+    echo "Error: ld-linux-aarch64.so.1 not found."
+    exit 1
+fi
+
+if [ -n "${SHARED_LIB_1}" ]; then
+    cp "${SHARED_LIB_1}" "${OUTDIR}/rootfs/lib64"
+    cp "${SHARED_LIB_1}" "${OUTDIR}/rootfs/home"
+else
+    echo "Error: libm.so.6 not found."
+    exit 1
+fi
+
+if [ -n "${SHARED_LIB_2}" ]; then
+    cp "${SHARED_LIB_2}" "${OUTDIR}/rootfs/lib64"
+    cp "${SHARED_LIB_2}" "${OUTDIR}/rootfs/home"
+else
+    echo "Error: libresolv.so.2 not found."
+    exit 1
+fi
+
+if [ -n "${SHARED_LIB_3}" ]; then
+    cp "${SHARED_LIB_3}" "${OUTDIR}/rootfs/lib64"
+    cp "${SHARED_LIB_3}" "${OUTDIR}/rootfs/home"
+else
+    echo "Error: libc.so.6 not found."
+    exit 1
+fi
 
 # Make device nodes
 sudo mknod -m 666 ${OUTDIR}/rootfs/dev/null c 1 3
