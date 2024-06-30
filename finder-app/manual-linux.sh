@@ -1,6 +1,4 @@
 #!/bin/bash
-# Script to install and build Linux kernel, root filesystem with BusyBox, and application utilities.
-# Author: Siddhant Jajoo.
 
 set -e # Exit script on any error
 set -u # Treat unset variables as errors
@@ -35,12 +33,13 @@ if [ -z "$GCC_PATH" ]; then
 fi
 CROSS_COMPILE=$(dirname "$GCC_PATH")/aarch64-none-linux-gnu-
 ${CROSS_COMPILE}gcc --version
-
 # Clone Linux kernel repository if not already cloned
 if [ ! -d "${OUTDIR}/linux-stable" ]; then
     echo "Cloning Linux kernel repository"
     git clone ${KERNEL_REPO} --depth 1 --single-branch --branch ${KERNEL_VERSION} linux-stable
 fi
+
+cd ${OUTDIR}
 
 # Build Linux kernel if necessary
 if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
@@ -49,7 +48,7 @@ if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
     git checkout ${KERNEL_VERSION}
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} mrproper
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig
-    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} -j4
+    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} -j$(nproc)
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} modules
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} dtbs
     cd ..
