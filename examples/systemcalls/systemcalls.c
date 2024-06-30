@@ -69,7 +69,7 @@ bool do_exec(int count, ...)
         if (execv(command[0], command) == -1)
         {
             // execv() failed
-            return false;
+            return -1;
         }
     }
     else

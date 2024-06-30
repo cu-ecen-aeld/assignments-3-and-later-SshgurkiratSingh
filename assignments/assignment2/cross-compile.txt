@@ -1,2 +1,1 @@
-mkdir -p assignments/assignment2
-aarch64-none-linux-gnu-gcc -print-sysroot -v > assignments/assignment2/cross-compile.txt 2>&1
+/home/gurkirat/Documents/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu/bin/../aarch64-none-linux-gnu/libc
