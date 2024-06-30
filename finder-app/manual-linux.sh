@@ -1,16 +1,19 @@
 #!/bin/bash
-# Script to build a barebones kernel and rootfs for ARM
+# Script outline to install and build kernel.
+# Author: Siddhant Jajoo.
 
+set -x
 set -e
 set -u
 
 OUTDIR=/tmp/aeld
-KERNEL_REPO=https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+KERNEL_REPO=git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
 KERNEL_VERSION=v5.1.10
 BUSYBOX_VERSION=1_33_1
 FINDER_APP_DIR=$(realpath $(dirname $0))
 ARCH=arm64
-CROSS_COMPILE=aarch64-linux-gnu-
+CROSS_COMPILE=/home/gurkirat/Documents/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu/bin/aarch64-none-linux-gnu-
+# CROSS_COMPILE=aarch64-none-linux-gnu-
 
 if [ $# -lt 1 ]; then
     echo "Using default directory ${OUTDIR} for output"
@@ -19,55 +22,31 @@ else
     echo "Using passed directory ${OUTDIR} for output"
 fi
 
-# Check if cross-compiler is installed
-if ! command -v ${CROSS_COMPILE}gcc &>/dev/null; then
-    echo "Cross-compiler ${CROSS_COMPILE}gcc not found. Please install it and try again."
-    exit 1
-fi
-
 mkdir -p ${OUTDIR}
 
 cd "$OUTDIR"
 if [ ! -d "${OUTDIR}/linux-stable" ]; then
-    # Clone only if the repository does not exist
+    #Clone only if the repository does not exist.
     echo "CLONING GIT LINUX STABLE VERSION ${KERNEL_VERSION} IN ${OUTDIR}"
-    git clone --depth 1 --single-branch --branch ${KERNEL_VERSION} ${KERNEL_REPO} linux-stable
+    git clone ${KERNEL_REPO} --depth 1 --single-branch --branch ${KERNEL_VERSION}
 fi
-
-cd linux-stable
-echo "Checking out version ${KERNEL_VERSION}"
-git checkout ${KERNEL_VERSION}
-
-# Apply the patch
-echo "Applying dtc-lexer patch"
-cat <<EOF >dtc-lexer.patch
---- a/scripts/dtc/dtc-lexer.l
-+++ b/scripts/dtc/dtc-lexer.l
-@@ -23,7 +23,6 @@ LINECOMMENT	"//".*\n
- #include "srcpos.h"
- #include "dtc-parser.tab.h"
- 
--YYLTYPE yylloc;
- extern bool treesource_error;
- 
- /* CAUTION: this will stop working if we ever use yyless() or yyunput() */
-EOF
-
-if ! patch -p1 <dtc-lexer.patch; then
-    echo "Failed to apply patch. Exiting."
-    exit 1
-fi
-
 if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
-    # Build steps
-    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} mrproper
-    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig
-    make -j$(nproc) ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} all
-    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} dtbs
+    cd linux-stable
+    echo "Checking out version ${KERNEL_VERSION}"
+    git checkout ${KERNEL_VERSION}
+
+    # TODO: Add your kernel build steps here
+    make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE mrproper
+    make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE defconfig
+    # make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE clean -- today
+    # sed -i 's/YYLTYPE yylloc;/extern &/' ./scripts/dtc/dtc-lexer.l
+    make -j4 ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE all
+    make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE modules
+    make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE dtbs
 fi
 
 echo "Adding the Image in outdir"
-cp ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ${OUTDIR}/
+cp "${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image" "${OUTDIR}/"
 
 echo "Creating the staging directory for the root filesystem"
 cd "$OUTDIR"
@@ -76,108 +55,83 @@ if [ -d "${OUTDIR}/rootfs" ]; then
     sudo rm -rf ${OUTDIR}/rootfs
 fi
 
-# Create necessary base directories
-mkdir -p ${OUTDIR}/rootfs
-cd ${OUTDIR}/rootfs
-mkdir -p bin dev etc home lib lib64 proc sbin sys tmp usr var
-mkdir -p usr/bin usr/lib usr/sbin
-mkdir -p var/log
+# TODO: Create necessary base directories
+sudo mkdir rootfs
+sudo mkdir -p rootfs/bin rootfs/dev rootfs/etc rootfs/home rootfs/lib rootfs/lib64 rootfs/proc rootfs/sbin rootfs/sys rootfs/tmp rootfs/usr rootfs/var
+sudo mkdir -p rootfs/usr/bin rootfs/usr/lib rootfs/usr/sbin
+sudo mkdir -p rootfs/var/log
+
+CURRENT_USER=$(whoami)
+CURRENT_GROUP=$(id -gn)
+sudo chown -R "${CURRENT_USER}:${CURRENT_GROUP}" "${OUTDIR}/rootfs"
 
 cd "$OUTDIR"
 if [ ! -d "${OUTDIR}/busybox" ]; then
+    # git clone https://github.com/mirror/busybox.git
+    # git clone https://github.com/mirror/busybox.git
     git clone git://busybox.net/busybox.git
     cd busybox
     git checkout ${BUSYBOX_VERSION}
-    # Configure busybox
-    make distclean
-    make defconfig
+    # TODO:  Configure busybox
 else
     cd busybox
 fi
 
-# Make and install busybox
-make distclean
-make defconfig
+# TODO: Make and install busybox
+# sudo make distclean
+sudo make distclean
+sudo make defconfig
+# make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE defconfig
 make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE}
+# sed -i 's/CONFIG_EXTRA_CFLAGS=""/CONFIG_EXTRA_CFLAGS="-static"/g' .config   -- today
+# sudo make -j4 CONFIG_PREFIX=${OUTDIR}/rootfs ARCH=arm64 CROSS_COMPILE=${CROSS_COMPILE} install
 make CONFIG_PREFIX=${OUTDIR}/rootfs ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} install
 
+# sudo chmod +s ${OUTDIR}/rootfs/bin/busybox commented by me
+
+cd ${OUTDIR}/rootfs
+
 echo "Library dependencies"
-${CROSS_COMPILE}readelf -a ${OUTDIR}/rootfs/bin/busybox | grep "program interpreter"
-${CROSS_COMPILE}readelf -a ${OUTDIR}/rootfs/bin/busybox | grep "Shared library"
+# ${CROSS_COMPILE}readelf -a /bin | grep "program interpreter"
+# ${CROSS_COMPILE}readelf  -a /bin | grep "Shared library"
+echo "After checking library dependencies"
 
-# Add library dependencies to rootfs
+# TODO: Add library dependencies to rootfs
 SYSROOT=$(${CROSS_COMPILE}gcc -print-sysroot)
-
-echo "SYSROOT is set to: ${SYSROOT}"
-if [ ! -d "${SYSROOT}" ]; then
-    echo "SYSROOT path does not exist. Exiting."
-    exit 1
-fi
-
-
-# Define sysroot and search for libraries
-SYSROOT=$(${CROSS_COMPILE}gcc -print-sysroot)
-INTERPRETER=$(find ${SYSROOT} -name "ld-linux-aarch64.so.1" -type f -print -quit)
-SHARED_LIB_1=$(find ${SYSROOT} -name "libm.so.6" -type f -print -quit)
-SHARED_LIB_2=$(find ${SYSROOT} -name "libresolv.so.2" -type f -print -quit)
-SHARED_LIB_3=$(find ${SYSROOT} -name "libc.so.6" -type f -print -quit)
-
-# Copy libraries to rootfs
-if [ -n "${INTERPRETER}" ]; then
-    cp "${INTERPRETER}" "${OUTDIR}/rootfs/lib"
-    cp "${INTERPRETER}" "${OUTDIR}/rootfs/home"
-else
-    echo "Error: ld-linux-aarch64.so.1 not found."
-    exit 1
-fi
-
-if [ -n "${SHARED_LIB_1}" ]; then
-    cp "${SHARED_LIB_1}" "${OUTDIR}/rootfs/lib64"
-    cp "${SHARED_LIB_1}" "${OUTDIR}/rootfs/home"
-else
-    echo "Error: libm.so.6 not found."
-    exit 1
-fi
-
-if [ -n "${SHARED_LIB_2}" ]; then
-    cp "${SHARED_LIB_2}" "${OUTDIR}/rootfs/lib64"
-    cp "${SHARED_LIB_2}" "${OUTDIR}/rootfs/home"
-else
-    echo "Error: libresolv.so.2 not found."
-    exit 1
-fi
-
-if [ -n "${SHARED_LIB_3}" ]; then
-    cp "${SHARED_LIB_3}" "${OUTDIR}/rootfs/lib64"
-    cp "${SHARED_LIB_3}" "${OUTDIR}/rootfs/home"
-else
-    echo "Error: libc.so.6 not found."
-    exit 1
-fi
-
-# Make device nodes
-sudo mknod -m 666 ${OUTDIR}/rootfs/dev/null c 1 3
-sudo mknod -m 600 ${OUTDIR}/rootfs/dev/console c 5 1
-
-# Clean and build the writer utility
+INTERPRETER=$(find $SYSROOT -name "ld-linux-aarch64.so.1")
+cp ${INTERPRETER} ${OUTDIR}/rootfs/lib
+cp ${INTERPRETER} ${OUTDIR}/rootfs/home
+SHARED_LIB_1=$(find $SYSROOT -name "libm.so.6")
+cp ${SHARED_LIB_1} ${OUTDIR}/rootfs/lib64
+cp ${SHARED_LIB_1} ${OUTDIR}/rootfs/home
+SHARED_LIB_2=$(find $SYSROOT -name "libresolv.so.2")
+cp ${SHARED_LIB_2} ${OUTDIR}/rootfs/lib64
+cp ${SHARED_LIB_2} ${OUTDIR}/rootfs/home
+SHARED_LIB_3=$(find $SYSROOT -name "libc.so.6")
+cp ${SHARED_LIB_3} ${OUTDIR}/rootfs/lib64
+cp ${SHARED_LIB_3} ${OUTDIR}/rootfs/home
+# TODO: Make device nodes
+sudo mknod -m 666 dev/null c 1 3
+sudo mknod -m 600 dev/console c 5 1
+# TODO: Clean and build the writer utility
 cd ${FINDER_APP_DIR}
 make clean
 make CROSS_COMPILE=${CROSS_COMPILE}
 
-# Copy the finder related scripts and executables to the /home directory
-cp ${FINDER_APP_DIR}/finder.sh ${OUTDIR}/rootfs/home/
-cp ${FINDER_APP_DIR}/finder-test.sh ${OUTDIR}/rootfs/home/
-cp ${FINDER_APP_DIR}/writer ${OUTDIR}/rootfs/home/
-cp ${FINDER_APP_DIR}/autorun-qemu.sh ${OUTDIR}/rootfs/home/
-cp -r ${FINDER_APP_DIR}/conf ${OUTDIR}/rootfs/home/
+# TODO: Copy the finder related scripts and executables to the /home directory
+# on the target rootfs
+sudo cp -RH * ${OUTDIR}/rootfs/home
+cd ${FINDER_APP_DIR}/conf
+sudo cp -RH * ${OUTDIR}/rootfs/home
 
-# Modify finder-test.sh to use the correct path
-sed -i 's|../conf/assignment.txt|conf/assignment.txt|' ${OUTDIR}/rootfs/home/finder-test.sh
-
-# Chown the root directory
-sudo chown -R root:root ${OUTDIR}/rootfs
-
-# Create initramfs.cpio.gz
+cd ${OUTDIR}/rootfs/home
+sed -i 's|cat ../conf/assignment.txt|cat conf/assignment.txt|' finder-test.sh
+sudo chmod +x finder-test.sh
+sudo chmod +x writer.sh
+sudo chmod +x writer
+# TODO: Chown the root directory
 cd ${OUTDIR}/rootfs
+sudo chown -R root:root *
+# TODO: Create initramfs.cpio.gz
 find . | cpio -H newc -ov --owner root:root >${OUTDIR}/initramfs.cpio
-gzip -f ${OUTDIR}/initramfs.cpio
+gzip -f $OUTDIR/initramfs.cpio
