@@ -1,5 +1,5 @@
 #!/bin/bash
-# Script to install and build Linux kernel and root filesystem.
+# Script to install and build Linux kernel, root filesystem with BusyBox, and application utilities.
 # Author: Siddhant Jajoo.
 
 set -e # Exit script on any error
@@ -25,6 +25,12 @@ mkdir -p ${OUTDIR}
 
 # Change to output directory
 cd "$OUTDIR"
+
+# Verify GCC path and availability
+if [ ! -x "${CROSS_COMPILE}gcc" ]; then
+    echo "GCC compiler not found or not executable at ${CROSS_COMPILE}gcc"
+    exit 1
+fi
 
 # Clone Linux kernel repository if not already cloned
 if [ ! -d "${OUTDIR}/linux-stable" ]; then
