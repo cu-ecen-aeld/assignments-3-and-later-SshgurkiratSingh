@@ -14,4 +14,4 @@ $(TARGET): writer.c
 	$(CC) $(CFLAGS) -o $(TARGET) writer.c
 
 clean:
-    rm -f $(TARGET)
+	rm -f $(TARGET)
