@@ -1,12 +1,14 @@
-# Cross-compiler prefix (provided by Buildroot)
+# Cross-compiler prefix (allow Buildroot to override)
 CROSS_COMPILE ?= aarch64-none-linux-gnu-
 
 # Compiler and flags
-CC := $(CROSS_COMPILE)gcc
-CFLAGS := -Wall -O2
+CC ?= $(CROSS_COMPILE)gcc
+CFLAGS ?= -Wall -Werror -O2
 
 # Target executable
-TARGET := writer
+TARGET = writer
+
+.PHONY: all clean
 
 all: $(TARGET)
 
