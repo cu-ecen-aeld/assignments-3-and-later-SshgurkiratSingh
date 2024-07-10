@@ -8,12 +8,51 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <asm-generic/socket.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdbool.h>
+#include <sys/stat.h>
 
 #define PORT 9000
 #define FILE_PATH "/var/tmp/aesdsocketdata"
 
 volatile sig_atomic_t keep_running = 1;
+int server_fd = -1, client_fd = -1;
+FILE *file = NULL;
+char *buffer = NULL;
+size_t buffer_size = 0;
+
+void cleanup()
+{
+    if (client_fd >= 0)
+    {
+        close(client_fd);
+        client_fd = -1;
+    }
+    if (server_fd >= 0)
+    {
+        close(server_fd);
+        server_fd = -1;
+    }
+    if (file)
+    {
+        fclose(file);
+        file = NULL;
+    }
+    if (buffer)
+    {
+        free(buffer);
+        buffer = NULL;
+    }
+    unlink(FILE_PATH);
+    closelog();
+}
+
+void exit_with_cleanup()
+{
+    cleanup();
+    exit(EXIT_FAILURE);
+}
 
 void my_handler(int sig)
 {
@@ -21,17 +60,11 @@ void my_handler(int sig)
     {
         syslog(LOG_INFO, "Caught signal, exiting");
         keep_running = 0;
+        cleanup();
+        exit(EXIT_SUCCESS);
     }
 }
 
-void exit_with_cleanup(int server_fd)
-{
-    if (server_fd >= 0)
-        close(server_fd);
-    unlink(FILE_PATH);
-    closelog();
-    exit(EXIT_FAILURE);
-}
 void daemonize()
 {
     pid_t pid = fork();
@@ -61,7 +94,6 @@ void daemonize()
     {
         exit(EXIT_SUCCESS);
     }
-
     umask(0);
     chdir("/");
 
@@ -71,77 +103,25 @@ void daemonize()
         close(x);
     }
 }
-void handle_client(int client_fd)
-{
-    char buffer[1024] = {0};
-    ssize_t bytes_read;
-    FILE *file = fopen(FILE_PATH, "a+");
-    if (file == NULL)
-    {
-        syslog(LOG_ERR, "Failed to open file");
-        close(client_fd);
-        return;
-    }
-
-    while ((bytes_read = recv(client_fd, buffer, sizeof(buffer) - 1, 0)) > 0)
-    {
-        buffer[bytes_read] = '\0';
-        fputs(buffer, file);
-        if (strchr(buffer, '\n') != NULL)
-        {
-            break;
-        }
-    }
-
-    if (bytes_read == -1)
-    {
-        syslog(LOG_ERR, "recv() failed");
-    }
-
-    fclose(file);
-}
-
-void send_file_contents(int client_fd)
-{
-    FILE *file = fopen(FILE_PATH, "r");
-    if (file == NULL)
-    {
-        syslog(LOG_ERR, "Failed to open file");
-        close(client_fd);
-        return;
-    }
-
-    char buffer[1024] = {0};
-    while (fgets(buffer, sizeof(buffer), file) != NULL)
-    {
-        if (send(client_fd, buffer, strlen(buffer), 0) == -1)
-        {
-            syslog(LOG_ERR, "send() failed");
-            fclose(file);
-            close(client_fd);
-            return;
-        }
-    }
-    fclose(file);
-}
 
 int main(int argc, char *argv[])
 {
     int daemon_mode = 0;
-    int opt;
 
-    while ((opt = getopt(argc, argv, "d")) != -1)
+    for (int i = 0; i < argc; i++)
     {
-        switch (opt)
+        if (strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--daemon") == 0)
         {
-        case 'd':
             daemon_mode = 1;
             break;
-        default:
-            fprintf(stderr, "Usage: %s [-d]\n", argv[0]);
-            exit(EXIT_FAILURE);
         }
     }
+
+    if (daemon_mode)
+    {
+        daemonize();
+    }
+
     struct sockaddr_in address;
     int opt_socket = 1;
     int addrlen = sizeof(address);
@@ -151,17 +131,17 @@ int main(int argc, char *argv[])
     signal(SIGINT, my_handler);
     signal(SIGTERM, my_handler);
 
-    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd == 0)
     {
         syslog(LOG_ERR, "Failed to create socket");
-        exit_with_cleanup(server_fd);
+        exit_with_cleanup();
     }
 
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt_socket, sizeof(opt_socket)) < 0)
     {
         syslog(LOG_ERR, "Failed to set socket options");
-        exit_with_cleanup(server_fd);
+        exit_with_cleanup();
     }
 
     address.sin_family = AF_INET;
@@ -171,25 +151,27 @@ int main(int argc, char *argv[])
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0)
     {
         syslog(LOG_ERR, "Failed to bind socket");
-        exit_with_cleanup(server_fd);
+        exit_with_cleanup();
     }
 
     if (listen(server_fd, 3) < 0)
     {
         syslog(LOG_ERR, "Failed to listen for connections");
-        exit_with_cleanup(server_fd);
+        exit_with_cleanup();
     }
 
     while (keep_running)
     {
-        int client_fd = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen);
+        client_fd = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen);
         if (client_fd < 0)
         {
-            if (keep_running)
+            if (errno == EINTR)
             {
-                syslog(LOG_ERR, "Failed to accept connection");
+                continue;
             }
-            continue;
+            syslog(LOG_ERR, "Unable to accept the client's connection: %s", strerror(errno));
+            perror("Unable to accept the client's connection");
+            break;
         }
 
         char client_ip[INET_ADDRSTRLEN];
@@ -201,15 +183,88 @@ int main(int argc, char *argv[])
         }
         syslog(LOG_INFO, "Accepted connection from %s", client_ip);
 
-        handle_client(client_fd);
-        send_file_contents(client_fd);
-        close(client_fd);
+        while (keep_running)
+        {
+            size_t bytes_read;
+
+            buffer = realloc(buffer, buffer_size + 1024);
+            if (!buffer)
+            {
+                syslog(LOG_ERR, "Failed to allocate memory");
+                exit_with_cleanup();
+            }
+
+            bytes_read = recv(client_fd, buffer + buffer_size, 1024, 0);
+            if (bytes_read <= 0)
+            {
+                if (bytes_read == 0)
+                {
+                    syslog(LOG_INFO, "Client disconnected");
+                    printf("Client disconnected\n");
+                }
+                else if (errno != EINTR)
+                {
+                    syslog(LOG_ERR, "recv() failed: %s", strerror(errno));
+                    printf("recv() failed: %s\n", strerror(errno));
+                }
+                break;
+            }
+            buffer_size += bytes_read;
+
+            // Check if we've received a complete line
+            if (memchr(buffer + buffer_size - bytes_read, '\n', bytes_read) != NULL)
+            {
+                // We have a complete line, write it to the file
+                file = fopen(FILE_PATH, "a+");
+                if (!file)
+                {
+                    syslog(LOG_ERR, "Failed to open file");
+                    close(client_fd);
+                    continue;
+                }
+                fwrite(buffer, 1, buffer_size, file);
+                fclose(file);
+                file = NULL;
+
+                // Now send the entire file back to the client
+                file = fopen(FILE_PATH, "r");
+                if (!file)
+                {
+                    syslog(LOG_ERR, "Failed to open file for reading");
+                    close(client_fd);
+                    continue;
+                }
+
+                char send_buffer[1024];
+                size_t bytes_sent;
+                while ((bytes_sent = fread(send_buffer, 1, sizeof(send_buffer), file)) > 0)
+                {
+                    if (send(client_fd, send_buffer, bytes_sent, 0) == -1)
+                    {
+                        if (errno != EINTR)
+                        {
+                            syslog(LOG_ERR, "Failed to send data to client: %s", strerror(errno));
+                            break;
+                        }
+                    }
+                }
+
+                fclose(file);
+                file = NULL;
+
+                // Reset buffer for next message
+                buffer_size = 0;
+            }
+        }
+
+        if (client_fd >= 0)
+        {
+            close(client_fd);
+            client_fd = -1;
+        }
         syslog(LOG_INFO, "Closed connection from %s", client_ip);
     }
 
-    close(server_fd);
-    unlink(FILE_PATH);
-    closelog();
-
+    cleanup();
     return 0;
 }
