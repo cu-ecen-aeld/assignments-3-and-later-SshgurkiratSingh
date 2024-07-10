@@ -117,14 +117,8 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (daemon_mode)
-    {
-        daemonize();
-    }
-
     struct sockaddr_in address;
     int opt_socket = 1;
-    int addrlen = sizeof(address);
 
     openlog("aesdsocket", LOG_PID, LOG_USER);
 
@@ -159,10 +153,56 @@ int main(int argc, char *argv[])
         syslog(LOG_ERR, "Failed to listen for connections");
         exit_with_cleanup();
     }
+    if (daemon_mode)
+    {
+        pid_t pid = fork();
+
+        if (pid < 0)
+        {
+            printf("failed to fork\n");
+            close(server_fd);
+            fclose(file);
+            closelog();
+            exit(EXIT_FAILURE);
+        }
+
+        if (pid > 0)
+        {
+            printf("Running as a deamon\n");
+            exit(EXIT_SUCCESS);
+        }
+
+        umask(0);
+
+        if (setsid() < 0)
+        {
+            printf("Failed to create SID for child\n");
+            close(server_fd);
+            fclose(file);
+            closelog();
+            exit(EXIT_FAILURE);
+        }
+
+        if (chdir("/") < 0)
+        {
+            printf("Unable to change directory to root\n");
+            close(server_fd);
+            fclose(file);
+            closelog();
+            exit(EXIT_FAILURE);
+        }
+
+        close(STDIN_FILENO);
+        close(STDOUT_FILENO);
+        close(STDERR_FILENO);
+    }
+    syslog(LOG_INFO, "TCP server listening at port %d", ntohs(address.sin_port));
 
     while (keep_running)
     {
-        client_fd = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen);
+        struct sockaddr_in client_address;
+        ssize_t clientLength = sizeof(client_address);
+        client_fd = accept(server_fd, (struct sockaddr *)&client_address, (socklen_t *)&clientLength);
         if (client_fd < 0)
         {
             if (errno == EINTR)
@@ -175,57 +215,57 @@ int main(int argc, char *argv[])
         }
 
         char client_ip[INET_ADDRSTRLEN];
-        if (inet_ntop(AF_INET, &address.sin_addr, client_ip, INET_ADDRSTRLEN) == NULL)
+        if (inet_ntop(AF_INET, &client_address.sin_addr, client_ip, INET_ADDRSTRLEN) == NULL)
         {
             syslog(LOG_ERR, "Failed to get client IP address");
             close(client_fd);
             continue;
         }
         syslog(LOG_INFO, "Accepted connection from %s", client_ip);
+        int num_bytes = 0;
 
         while (keep_running)
         {
             size_t bytes_read;
 
-            buffer = realloc(buffer, buffer_size + 1024);
+            buffer = realloc(buffer, num_bytes + 4096);
             if (!buffer)
             {
                 syslog(LOG_ERR, "Failed to allocate memory");
                 exit_with_cleanup();
             }
 
-            bytes_read = recv(client_fd, buffer + buffer_size, 1024, 0);
+            bytes_read = recv(client_fd, buffer + num_bytes, 4096, 0);
             if (bytes_read <= 0)
             {
                 if (bytes_read == 0)
                 {
                     syslog(LOG_INFO, "Client disconnected");
-                    printf("Client disconnected\n");
                 }
                 else if (errno != EINTR)
                 {
                     syslog(LOG_ERR, "recv() failed: %s", strerror(errno));
-                    printf("recv() failed: %s\n", strerror(errno));
                 }
                 break;
             }
-            buffer_size += bytes_read;
+
+            num_bytes += bytes_read;
+
+            // Write received data to file immediately
+            file = fopen(FILE_PATH, "a+");
+            if (!file)
+            {
+                syslog(LOG_ERR, "Failed to open file");
+                close(client_fd);
+                continue;
+            }
+            fwrite(buffer + num_bytes - bytes_read, 1, bytes_read, file);
+            fclose(file);
+            file = NULL;
 
             // Check if we've received a complete line
-            if (memchr(buffer + buffer_size - bytes_read, '\n', bytes_read) != NULL)
+            if (memchr(buffer + num_bytes - bytes_read, '\n', bytes_read) != NULL)
             {
-                // We have a complete line, write it to the file
-                file = fopen(FILE_PATH, "a+");
-                if (!file)
-                {
-                    syslog(LOG_ERR, "Failed to open file");
-                    close(client_fd);
-                    continue;
-                }
-                fwrite(buffer, 1, buffer_size, file);
-                fclose(file);
-                file = NULL;
-
                 // Now send the entire file back to the client
                 file = fopen(FILE_PATH, "r");
                 if (!file)
@@ -235,7 +275,7 @@ int main(int argc, char *argv[])
                     continue;
                 }
 
-                char send_buffer[1024];
+                char send_buffer[4096];
                 size_t bytes_sent;
                 while ((bytes_sent = fread(send_buffer, 1, sizeof(send_buffer), file)) > 0)
                 {
@@ -253,7 +293,7 @@ int main(int argc, char *argv[])
                 file = NULL;
 
                 // Reset buffer for next message
-                buffer_size = 0;
+                num_bytes = 0;
             }
         }
 
