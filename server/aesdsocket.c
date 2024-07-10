@@ -10,11 +10,9 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <arpa/inet.h>
-
-#include <signal.h>
 #include <stdbool.h>
 #include <sys/stat.h>
+
 #define PORT 9000
 #define FILE_PATH "/var/tmp/aesdsocketdata"
 
@@ -27,11 +25,20 @@ size_t buffer_size = 0;
 void cleanup()
 {
     if (client_fd >= 0)
+    {
         close(client_fd);
+        client_fd = -1;
+    }
     if (server_fd >= 0)
+    {
         close(server_fd);
+        server_fd = -1;
+    }
     if (file)
+    {
         fclose(file);
+        file = NULL;
+    }
     if (buffer)
     {
         free(buffer);
@@ -51,16 +58,9 @@ void my_handler(int sig)
 {
     if (sig == SIGINT || sig == SIGTERM)
     {
-        remove(FILE_PATH);
         syslog(LOG_INFO, "Caught signal, exiting");
         keep_running = 0;
-        close(client_fd);
-        close(server_fd);
-        unlink(FILE_PATH);
-        free(buffer);
-        buffer = NULL;
-        closelog();
-        fclose(file);
+        cleanup();
         exit(EXIT_SUCCESS);
     }
 }
@@ -113,7 +113,6 @@ int main(int argc, char *argv[])
         if (strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--daemon") == 0)
         {
             daemon_mode = 1;
-
             break;
         }
     }
@@ -122,6 +121,7 @@ int main(int argc, char *argv[])
     {
         daemonize();
     }
+
     struct sockaddr_in address;
     int opt_socket = 1;
     int addrlen = sizeof(address);
@@ -135,13 +135,13 @@ int main(int argc, char *argv[])
     if (server_fd == 0)
     {
         syslog(LOG_ERR, "Failed to create socket");
-        exit_with_cleanup(server_fd);
+        exit_with_cleanup();
     }
 
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt_socket, sizeof(opt_socket)) < 0)
     {
         syslog(LOG_ERR, "Failed to set socket options");
-        exit_with_cleanup(server_fd);
+        exit_with_cleanup();
     }
 
     address.sin_family = AF_INET;
@@ -151,13 +151,13 @@ int main(int argc, char *argv[])
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0)
     {
         syslog(LOG_ERR, "Failed to bind socket");
-        exit_with_cleanup(server_fd);
+        exit_with_cleanup();
     }
 
     if (listen(server_fd, 3) < 0)
     {
         syslog(LOG_ERR, "Failed to listen for connections");
-        exit_with_cleanup(server_fd);
+        exit_with_cleanup();
     }
 
     while (keep_running)
@@ -165,12 +165,13 @@ int main(int argc, char *argv[])
         client_fd = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen);
         if (client_fd < 0)
         {
-            syslog(LOG_ERR, "Unable to accept the client's connection");
-            perror("Unable to accept the client's connection\n");
-            close(server_fd);
-            fclose(file);
-            closelog();
-            return -1;
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            syslog(LOG_ERR, "Unable to accept the client's connection: %s", strerror(errno));
+            perror("Unable to accept the client's connection");
+            break;
         }
 
         char client_ip[INET_ADDRSTRLEN];
@@ -182,7 +183,6 @@ int main(int argc, char *argv[])
         }
         syslog(LOG_INFO, "Accepted connection from %s", client_ip);
 
-       
         while (keep_running)
         {
             size_t bytes_read;
@@ -202,7 +202,7 @@ int main(int argc, char *argv[])
                     syslog(LOG_INFO, "Client disconnected");
                     printf("Client disconnected\n");
                 }
-                else
+                else if (errno != EINTR)
                 {
                     syslog(LOG_ERR, "recv() failed: %s", strerror(errno));
                     printf("recv() failed: %s\n", strerror(errno));
@@ -220,10 +220,11 @@ int main(int argc, char *argv[])
                 {
                     syslog(LOG_ERR, "Failed to open file");
                     close(client_fd);
-                    return -1;
+                    continue;
                 }
                 fwrite(buffer, 1, buffer_size, file);
                 fclose(file);
+                file = NULL;
 
                 // Now send the entire file back to the client
                 file = fopen(FILE_PATH, "r");
@@ -231,7 +232,7 @@ int main(int argc, char *argv[])
                 {
                     syslog(LOG_ERR, "Failed to open file for reading");
                     close(client_fd);
-                    return -1;
+                    continue;
                 }
 
                 char send_buffer[1024];
@@ -240,8 +241,11 @@ int main(int argc, char *argv[])
                 {
                     if (send(client_fd, send_buffer, bytes_sent, 0) == -1)
                     {
-                        syslog(LOG_ERR, "Failed to send data to client");
-                        break;
+                        if (errno != EINTR)
+                        {
+                            syslog(LOG_ERR, "Failed to send data to client: %s", strerror(errno));
+                            break;
+                        }
                     }
                 }
 
@@ -252,7 +256,12 @@ int main(int argc, char *argv[])
                 buffer_size = 0;
             }
         }
-        close(client_fd);
+
+        if (client_fd >= 0)
+        {
+            close(client_fd);
+            client_fd = -1;
+        }
         syslog(LOG_INFO, "Closed connection from %s", client_ip);
     }
 
