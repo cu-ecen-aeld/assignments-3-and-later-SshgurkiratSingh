@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <stdbool.h>
 #include <sys/stat.h>
+#include <asm-generic/socket.h>
 
 #define PORT 9000
 #define FILE_PATH "/var/tmp/aesdsocketdata"
