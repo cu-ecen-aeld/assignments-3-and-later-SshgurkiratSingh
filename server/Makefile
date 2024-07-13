@@ -6,6 +6,7 @@ LDFLAGS ?= -pthread
 all: $(TARGET)
 
 $(TARGET): $(TARGET).c
-	$(CC) $(CFLAGS) -o $(TARGET) $(TARGET).c $(LDFLAGS)
+    $(CC) $(CFLAGS) -o $(TARGET) $(TARGET).c $(LDFLAGS)
+
 clean:
-	rm -f $(TARGET)
+    rm -f $(TARGET)
