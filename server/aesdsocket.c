@@ -13,6 +13,8 @@
 #include <stdbool.h>
 #include <sys/stat.h>
 #include <asm-generic/socket.h>
+#include <pthread.h>
+#include <time.h>
 
 #define PORT 9000
 #define FILE_PATH "/var/tmp/aesdsocketdata"
@@ -23,28 +25,64 @@ FILE *file = NULL;
 char *buffer = NULL;
 size_t buffer_size = 0;
 
+pthread_t t_thread;
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+
+struct thread_node
+{
+    pthread_t thread_id;
+    int client_fd;
+    struct thread_node *next;
+};
+struct thread_node *thread_list = NULL;
+void cleanup();
+void *handle_connection(void *client_socket);
+void *timestamp_thread(void *arg);
+void add_thread(pthread_t thread_id, int client_fd);
+void remove_thread(pthread_t thread_id);
+void cleanup_threads();
+
+void writeTimeStampToFile()
+{
+    // get current time in a variable
+    time_t t = time(NULL);
+    char str[80];
+    // convert time to rfc2822 format
+    strftime(str, sizeof(str), "%a, %d %b %Y %H:%M:%S %z", localtime(&t));
+    // printf("Current time: %s\n", str);
+    // lock the mutex
+    pthread_mutex_lock(&mutex);
+    // open file in append mode
+    file = fopen(FILE_PATH, "a");
+    // write current time to file
+    fprintf(file, "timestamp:%s\n", str);
+    // close file
+    fclose(file);
+    // unlock the mutex
+    pthread_mutex_unlock(&mutex);
+}
+
+void *timestamp_thread(void *arg)
+{
+    while (keep_running)
+    {
+
+        writeTimeStampToFile();
+        sleep(10);
+    }
+    return NULL;
+}
 void cleanup()
 {
-    if (client_fd >= 0)
-    {
-        close(client_fd);
-        client_fd = -1;
-    }
+    keep_running = 0;
     if (server_fd >= 0)
     {
         close(server_fd);
         server_fd = -1;
     }
-    if (file)
-    {
-        fclose(file);
-        file = NULL;
-    }
-    if (buffer)
-    {
-        free(buffer);
-        buffer = NULL;
-    }
+    pthread_join(t_thread, NULL);
+    cleanup_threads();
+    pthread_mutex_destroy(&mutex);
     unlink(FILE_PATH);
     closelog();
 }
@@ -66,45 +104,79 @@ void my_handler(int sig)
     }
 }
 
-void daemonize()
-{
-    pid_t pid = fork();
-    if (pid < 0)
-    {
-        exit(EXIT_FAILURE);
-    }
-    if (pid > 0)
-    {
-        exit(EXIT_SUCCESS);
-    }
+void *handle_connection(void *arg) {
+    int client_fd = *((int *)arg);
+    free(arg);
 
-    if (setsid() < 0)
-    {
-        exit(EXIT_FAILURE);
-    }
+    char buffer[1024];
+    ssize_t num_bytes = 0;
 
-    signal(SIGCHLD, SIG_IGN);
-    signal(SIGHUP, SIG_IGN);
+    while ((num_bytes = recv(client_fd, buffer, sizeof(buffer), 0)) > 0) {
+        buffer[num_bytes] = '\0';
+        pthread_mutex_lock(&mutex);
+        file = fopen(FILE_PATH, "a");
+        if (file) {
+            fwrite(buffer, 1, num_bytes, file);
+            fclose(file);
+        }
+        pthread_mutex_unlock(&mutex);
 
-    pid = fork();
-    if (pid < 0)
-    {
-        exit(EXIT_FAILURE);
+        if (strchr(buffer, '\n') != NULL) {
+            pthread_mutex_lock(&mutex);
+            file = fopen(FILE_PATH, "r");
+            if (file) {
+                while (fgets(buffer, sizeof(buffer), file) != NULL) {
+                    send(client_fd, buffer, strlen(buffer), 0);
+                }
+                fclose(file);
+            }
+            pthread_mutex_unlock(&mutex);
+        }
     }
-    if (pid > 0)
-    {
-        exit(EXIT_SUCCESS);
+    if (num_bytes == 0) {
+        syslog(LOG_INFO, "Client disconnected");
+    } else if (num_bytes < 0) {
+        syslog(LOG_ERR, "recv() failed: %s", strerror(errno));
     }
-    umask(0);
-    chdir("/");
-
-    int x;
-    for (x = sysconf(_SC_OPEN_MAX); x >= 0; x--)
-    {
-        close(x);
-    }
+    close(client_fd);
+    return NULL;
 }
 
+void add_thread(pthread_t thread_id, int client_fd)
+{
+    struct thread_node *new_node = malloc(sizeof(struct thread_node));
+    new_node->thread_id = thread_id;
+    new_node->client_fd = client_fd;
+    new_node->next = thread_list;
+    thread_list = new_node;
+}
+
+void remove_thread(pthread_t thread_id)
+{
+    struct thread_node **pp = &thread_list;
+    while (*pp)
+    {
+        struct thread_node *node = *pp;
+        if (pthread_equal(node->thread_id, thread_id))
+        {
+            *pp = node->next;
+            free(node);
+            return;
+        }
+        pp = &node->next;
+    }
+}
+void cleanup_threads()
+{
+    while (thread_list)
+    {
+        pthread_join(thread_list->thread_id, NULL);
+        close(thread_list->client_fd);
+        struct thread_node *temp = thread_list;
+        thread_list = thread_list->next;
+        free(temp);
+    }
+}
 int main(int argc, char *argv[])
 {
     int daemon_mode = 0;
@@ -122,6 +194,7 @@ int main(int argc, char *argv[])
     int opt_socket = 1;
 
     openlog("aesdsocket", LOG_PID, LOG_USER);
+    pthread_create(&t_thread, NULL, timestamp_thread, NULL);
 
     signal(SIGINT, my_handler);
     signal(SIGTERM, my_handler);
@@ -202,108 +275,37 @@ int main(int argc, char *argv[])
     while (keep_running)
     {
         struct sockaddr_in client_address;
-        ssize_t clientLength = sizeof(client_address);
-        client_fd = accept(server_fd, (struct sockaddr *)&client_address, (socklen_t *)&clientLength);
-        if (client_fd < 0)
+        socklen_t client_len = sizeof(client_address);
+
+        int *client_fd = malloc(sizeof(int));
+        *client_fd = accept(server_fd, (struct sockaddr *)&client_address, &client_len);
+
+        if (*client_fd < 0)
         {
             if (errno == EINTR)
             {
+                free(client_fd);
                 continue;
             }
-            syslog(LOG_ERR, "Unable to accept the client's connection: %s", strerror(errno));
-            perror("Unable to accept the client's connection");
+            syslog(LOG_ERR, "Failed to accept connection");
+            free(client_fd);
             break;
         }
 
         char client_ip[INET_ADDRSTRLEN];
-        if (inet_ntop(AF_INET, &client_address.sin_addr, client_ip, INET_ADDRSTRLEN) == NULL)
+        inet_ntop(AF_INET, &client_address.sin_addr, client_ip, INET_ADDRSTRLEN);
+        syslog(LOG_INFO, "Accepted connection from %s", client_ip);
+
+        pthread_t thread_id;
+        if (pthread_create(&thread_id, NULL, handle_connection, client_fd) != 0)
         {
-            syslog(LOG_ERR, "Failed to get client IP address");
-            close(client_fd);
+            syslog(LOG_ERR, "Failed to create thread");
+            close(*client_fd);
+            free(client_fd);
             continue;
         }
-        syslog(LOG_INFO, "Accepted connection from %s", client_ip);
-        int num_bytes = 0;
 
-        while (keep_running)
-        {
-            size_t bytes_read;
-
-            buffer = realloc(buffer, num_bytes + 4096);
-            if (!buffer)
-            {
-                syslog(LOG_ERR, "Failed to allocate memory");
-                exit_with_cleanup();
-            }
-
-            bytes_read = recv(client_fd, buffer + num_bytes, 4096, 0);
-            if (bytes_read <= 0)
-            {
-                if (bytes_read == 0)
-                {
-                    syslog(LOG_INFO, "Client disconnected");
-                }
-                else if (errno != EINTR)
-                {
-                    syslog(LOG_ERR, "recv() failed: %s", strerror(errno));
-                }
-                break;
-            }
-
-            num_bytes += bytes_read;
-
-            // Write received data to file immediately
-            file = fopen(FILE_PATH, "a+");
-            if (!file)
-            {
-                syslog(LOG_ERR, "Failed to open file");
-                close(client_fd);
-                continue;
-            }
-            fwrite(buffer + num_bytes - bytes_read, 1, bytes_read, file);
-            fclose(file);
-            file = NULL;
-
-            // Check if we've received a complete line
-            if (memchr(buffer + num_bytes - bytes_read, '\n', bytes_read) != NULL)
-            {
-                // Now send the entire file back to the client
-                file = fopen(FILE_PATH, "r");
-                if (!file)
-                {
-                    syslog(LOG_ERR, "Failed to open file for reading");
-                    close(client_fd);
-                    continue;
-                }
-
-                char send_buffer[4096];
-                size_t bytes_sent;
-                while ((bytes_sent = fread(send_buffer, 1, sizeof(send_buffer), file)) > 0)
-                {
-                    if (send(client_fd, send_buffer, bytes_sent, 0) == -1)
-                    {
-                        if (errno != EINTR)
-                        {
-                            syslog(LOG_ERR, "Failed to send data to client: %s", strerror(errno));
-                            break;
-                        }
-                    }
-                }
-
-                fclose(file);
-                file = NULL;
-
-                // Reset buffer for next message
-                num_bytes = 0;
-            }
-        }
-
-        if (client_fd >= 0)
-        {
-            close(client_fd);
-            client_fd = -1;
-        }
-        syslog(LOG_INFO, "Closed connection from %s", client_ip);
+        add_thread(thread_id, *client_fd);
     }
 
     cleanup();
