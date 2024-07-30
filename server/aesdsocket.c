@@ -104,28 +104,34 @@ void my_handler(int sig)
     }
 }
 
-void *handle_connection(void *arg) {
+void *handle_connection(void *arg)
+{
     int client_fd = *((int *)arg);
     free(arg);
 
     char buffer[1024];
     ssize_t num_bytes = 0;
 
-    while ((num_bytes = recv(client_fd, buffer, sizeof(buffer), 0)) > 0) {
+    while ((num_bytes = recv(client_fd, buffer, sizeof(buffer), 0)) > 0)
+    {
         buffer[num_bytes] = '\0';
         pthread_mutex_lock(&mutex);
         file = fopen(FILE_PATH, "a");
-        if (file) {
+        if (file)
+        {
             fwrite(buffer, 1, num_bytes, file);
             fclose(file);
         }
         pthread_mutex_unlock(&mutex);
 
-        if (strchr(buffer, '\n') != NULL) {
+        if (strchr(buffer, '\n') != NULL)
+        {
             pthread_mutex_lock(&mutex);
             file = fopen(FILE_PATH, "r");
-            if (file) {
-                while (fgets(buffer, sizeof(buffer), file) != NULL) {
+            if (file)
+            {
+                while (fgets(buffer, sizeof(buffer), file) != NULL)
+                {
                     send(client_fd, buffer, strlen(buffer), 0);
                 }
                 fclose(file);
@@ -133,9 +139,12 @@ void *handle_connection(void *arg) {
             pthread_mutex_unlock(&mutex);
         }
     }
-    if (num_bytes == 0) {
+    if (num_bytes == 0)
+    {
         syslog(LOG_INFO, "Client disconnected");
-    } else if (num_bytes < 0) {
+    }
+    else if (num_bytes < 0)
+    {
         syslog(LOG_ERR, "recv() failed: %s", strerror(errno));
     }
     close(client_fd);
