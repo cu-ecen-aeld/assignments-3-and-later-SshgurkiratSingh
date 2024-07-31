@@ -1,47 +1,41 @@
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
-#include <syslog.h>
-#include <signal.h>
-#include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <string.h>
+#include <syslog.h>
 #include <arpa/inet.h>
-#include <errno.h>
-#include <fcntl.h>
+#include <stdlib.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <sys/stat.h>
-#include <asm-generic/socket.h>
 #include <pthread.h>
 #include <time.h>
+#include <sys/time.h>
 
-#define PORT 9000
-#define FILE_PATH "/var/tmp/aesdsocketdata"
+int sockfd;
+FILE *file;
 
-volatile sig_atomic_t keep_running = 1;
-int server_fd = -1, client_fd = -1;
-FILE *file = NULL;
-char *buffer = NULL;
-size_t buffer_size = 0;
+pthread_mutex_t file_mutex;
 
-pthread_t t_thread;
-pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+void *handle_client(void *ptr);
+void signalInterruptHandler(int signo);
+int createTCPServer(int deamonize);
 
-struct thread_node
+typedef struct node
 {
-    pthread_t thread_id;
-    int client_fd;
-    struct thread_node *next;
-};
-struct thread_node *thread_list = NULL;
-void cleanup();
-void *handle_connection(void *client_socket);
-void *timestamp_thread(void *arg);
-void add_thread(pthread_t thread_id, int client_fd);
-void remove_thread(pthread_t thread_id);
-void cleanup_threads();
+    pthread_t tid;
+    struct node *next;
+} Node;
 
+typedef struct
+{
+    int client_sockfd;
+    struct sockaddr_in client_addr;
+} client_info_t;
+
+// Declare the cleanup function
+void cleanup(Node *head, int sockfd, FILE *file);
 void writeTimeStampToFile()
 {
     // get current time in a variable
@@ -51,198 +45,261 @@ void writeTimeStampToFile()
     strftime(str, sizeof(str), "%a, %d %b %Y %H:%M:%S %z", localtime(&t));
     // printf("Current time: %s\n", str);
     // lock the mutex
-    pthread_mutex_lock(&mutex);
-    // open file in append mode
-    file = fopen(FILE_PATH, "a");
-    // write current time to file
+    pthread_mutex_lock(&file_mutex);
     fprintf(file, "timestamp:%s\n", str);
-    // close file
-    fclose(file);
+
     // unlock the mutex
-    pthread_mutex_unlock(&mutex);
+    pthread_mutex_unlock(&file_mutex);
 }
 
-void *timestamp_thread(void *arg)
+void *handle_client(void *ptr)
 {
-    while (keep_running)
-    {
+    client_info_t *client_info = (client_info_t *)ptr;
+    int client_sockfd = client_info->client_sockfd;
+    struct sockaddr_in client_addr = client_info->client_addr;
+    free(client_info);
 
-        writeTimeStampToFile();
-        sleep(10);
+    socklen_t client_len = sizeof(client_addr);
+
+    char client_ip[INET6_ADDRSTRLEN];
+
+    if (getpeername(client_sockfd, (struct sockaddr *)&client_addr, &client_len) == 0)
+    {
+        if (client_addr.sin_family == AF_INET)
+        {
+            struct sockaddr_in *ipv4 = (struct sockaddr_in *)&client_addr;
+            inet_ntop(AF_INET, &(ipv4->sin_addr), client_ip, INET6_ADDRSTRLEN);
+        }
+        else if (client_addr.sin_family == AF_INET6)
+        {
+            struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *)&client_addr;
+            inet_ntop(AF_INET6, &(ipv6->sin6_addr), client_ip, INET6_ADDRSTRLEN);
+        }
+
+        // printf("Client IP Address: %s\n", client_ip);
     }
+    else
+    {
+        perror("Unable to get client IP address");
+        close(client_sockfd);
+        return NULL;
+    }
+
+    // printf("Accepted connection from %s\n", client_ip);
+    syslog(LOG_INFO, "Accepted connection from %s", client_ip);
+
+    char *buffer = NULL;
+    ssize_t num_bytes = 0;
+    ssize_t recv_bytes = 0;
+
+    while (1)
+    {
+        int connection_closed = 0;
+        int received_error = 0;
+
+        do
+        {
+            buffer = realloc(buffer, num_bytes + 1024);
+            if (!buffer)
+            {
+                syslog(LOG_INFO, "Unable to allocate space on heap");
+                printf("Unable to allocate space on heap\n");
+                close(sockfd);
+                return NULL;
+            }
+
+            recv_bytes = recv(client_sockfd, buffer + num_bytes, 1024, 0);
+
+            if (recv_bytes == 0)
+            {
+                syslog(LOG_INFO, "Closed connection from %s", client_ip);
+                // printf("Closed connection from %s\n", client_ip);
+                connection_closed = 1;
+                break;
+            }
+            else if (recv_bytes < 0)
+            {
+                syslog(LOG_ERR, "Received error");
+                perror("Received error\n");
+                received_error = 1;
+                break;
+            }
+
+            num_bytes += recv_bytes;
+        } while (!memchr(buffer + num_bytes - recv_bytes, '\n', recv_bytes));
+
+        if (received_error == 1 || connection_closed == 1)
+        {
+            free(buffer);
+            buffer = NULL;
+            num_bytes = 0; // Reset num_bytes to 0
+            break;
+        }
+        else
+        {
+            buffer[num_bytes] = '\0';
+
+            // printf("Packet Received %s\n", buffer);
+            // printf("%s", buffer);
+
+            pthread_mutex_lock(&file_mutex);
+            fputs(buffer, file);
+            fflush(file);
+            fseek(file, 0, SEEK_SET);
+
+            size_t bufferSize = 1024; // or any other size you want
+            char *writeBuf = malloc(bufferSize * sizeof(char));
+            if (writeBuf == NULL)
+            {
+                perror("Unable to allocate memory for writeBuf");
+                pthread_mutex_unlock(&file_mutex);
+                return NULL;
+            }
+
+            while (fgets(writeBuf, bufferSize, file) != NULL)
+            {
+                send(client_sockfd, writeBuf, strlen(writeBuf), 0);
+            }
+
+            free(writeBuf); // don't forget to free the memory when you're done with it
+
+            pthread_mutex_unlock(&file_mutex);
+
+            free(buffer);
+            buffer = NULL;
+            num_bytes = 0; // Reset num_bytes to 0
+        }
+    }
+
+    syslog(LOG_INFO, "Closed connection from %s", client_ip);
+    close(client_sockfd);
     return NULL;
 }
-void cleanup()
+
+void signalInterruptHandler(int signo)
 {
-    keep_running = 0;
-    if (server_fd >= 0)
+    if ((signo == SIGTERM) || (signo == SIGINT))
     {
-        close(server_fd);
-        server_fd = -1;
+        int Status;
+
+        Status = remove("/var/tmp/aesdsocketdata");
+        if (Status == 0)
+        {
+            printf("Successfully deleted file /var/tmp/aesdsocket\n");
+        }
+        else
+        {
+            printf("Unable to delete file at path /var/tmp/aesdsocket\n");
+        }
+
+        printf("Gracefully handling SIGTERM\n");
+        syslog(LOG_INFO, "Caught signal, exiting");
+        cleanup(NULL, sockfd, file);
+        exit(EXIT_SUCCESS);
     }
-    pthread_join(t_thread, NULL);
-    cleanup_threads();
-    pthread_mutex_destroy(&mutex);
-    unlink(FILE_PATH);
+
+    if (signo == SIGALRM)
+    {
+        writeTimeStampToFile();
+        fflush(file);
+        fseek(file, 0, SEEK_SET);
+
+        alarm(10);
+    }
+}
+
+void cleanup(Node *head, int sockfd, FILE *file)
+{
+
+    // Join all threads and free Node list
+    Node *current = head;
+    Node *next;
+    while (current != NULL)
+    {
+        next = current->next;
+        pthread_join(current->tid, NULL);
+        free(current);
+        current = next;
+    }
+
+    // Close the socket and file, and cleanup syslog
+    close(sockfd);
+    fclose(file);
     closelog();
 }
 
-void exit_with_cleanup()
+int createTCPServer(int deamonize)
 {
-    cleanup();
-    exit(EXIT_FAILURE);
-}
+    signal(SIGINT, signalInterruptHandler);
+    signal(SIGTERM, signalInterruptHandler);
 
-void my_handler(int sig)
-{
-    if (sig == SIGINT || sig == SIGTERM)
+    const char *filepath = "/var/tmp/aesdsocketdata";
+
+    file = fopen(filepath, "a+");
+    if (file == NULL)
     {
-        syslog(LOG_INFO, "Caught signal, exiting");
-        keep_running = 0;
-        cleanup();
-        exit(EXIT_SUCCESS);
+        perror("Unable to open or create the file");
+        return -1;
     }
-}
 
-void *handle_connection(void *arg) {
-    int client_fd = *((int *)arg);
-    free(arg);
+    openlog("aesdsocket.c", LOG_CONS | LOG_PID, LOG_USER);
 
-    char buffer[1024];
-    ssize_t num_bytes = 0;
-
-    while ((num_bytes = recv(client_fd, buffer, sizeof(buffer), 0)) > 0) {
-        buffer[num_bytes] = '\0';
-        pthread_mutex_lock(&mutex);
-        file = fopen(FILE_PATH, "a");
-        if (file) {
-            fwrite(buffer, 1, num_bytes, file);
-            fclose(file);
-        }
-        pthread_mutex_unlock(&mutex);
-
-        if (strchr(buffer, '\n') != NULL) {
-            pthread_mutex_lock(&mutex);
-            file = fopen(FILE_PATH, "r");
-            if (file) {
-                while (fgets(buffer, sizeof(buffer), file) != NULL) {
-                    send(client_fd, buffer, strlen(buffer), 0);
-                }
-                fclose(file);
-            }
-            pthread_mutex_unlock(&mutex);
-        }
-    }
-    if (num_bytes == 0) {
-        syslog(LOG_INFO, "Client disconnected");
-    } else if (num_bytes < 0) {
-        syslog(LOG_ERR, "recv() failed: %s", strerror(errno));
-    }
-    close(client_fd);
-    return NULL;
-}
-
-void add_thread(pthread_t thread_id, int client_fd)
-{
-    struct thread_node *new_node = malloc(sizeof(struct thread_node));
-    new_node->thread_id = thread_id;
-    new_node->client_fd = client_fd;
-    new_node->next = thread_list;
-    thread_list = new_node;
-}
-
-void remove_thread(pthread_t thread_id)
-{
-    struct thread_node **pp = &thread_list;
-    while (*pp)
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd == -1)
     {
-        struct thread_node *node = *pp;
-        if (pthread_equal(node->thread_id, thread_id))
-        {
-            *pp = node->next;
-            free(node);
-            return;
-        }
-        pp = &node->next;
+        syslog(LOG_ERR, "Unable to create TCP Socket");
+        perror("Unable to create TCP Socket\n");
+        fclose(file);
+        closelog();
+        return -1;
     }
-}
-void cleanup_threads()
-{
-    while (thread_list)
+
+    int enable = 1;
+    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0)
     {
-        pthread_join(thread_list->thread_id, NULL);
-        close(thread_list->client_fd);
-        struct thread_node *temp = thread_list;
-        thread_list = thread_list->next;
-        free(temp);
+        syslog(LOG_ERR, "setsockopt(SO_REUSEADDR) failed");
+        perror("setsockopt(SO_REUSEADDR) failed");
     }
-}
-int main(int argc, char *argv[])
-{
-    int daemon_mode = 0;
 
-    for (int i = 0; i < argc; i++)
+    struct sockaddr_in addr;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(9000);
+
+    if (bind(sockfd, (struct sockaddr *)&addr, sizeof(addr)) == -1)
     {
-        if (strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--daemon") == 0)
-        {
-            daemon_mode = 1;
-            break;
-        }
+        syslog(LOG_ERR, "TCP Socket bind failure");
+        perror("TCP Socket bind failure\n");
+        close(sockfd);
+        fclose(file);
+        closelog();
+        return -1;
     }
 
-    struct sockaddr_in address;
-    int opt_socket = 1;
-
-    openlog("aesdsocket", LOG_PID, LOG_USER);
-    pthread_create(&t_thread, NULL, timestamp_thread, NULL);
-
-    signal(SIGINT, my_handler);
-    signal(SIGTERM, my_handler);
-
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd == 0)
+    if (listen(sockfd, 5) == -1)
     {
-        syslog(LOG_ERR, "Failed to create socket");
-        exit_with_cleanup();
+        syslog(LOG_ERR, "Unable to listen at created TCP socket");
+        perror("Unable to listen at created TCP socket\n");
+        close(sockfd);
+        fclose(file);
+        closelog();
+        return -1;
     }
 
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt_socket, sizeof(opt_socket)) < 0)
-    {
-        syslog(LOG_ERR, "Failed to set socket options");
-        exit_with_cleanup();
-    }
-
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(PORT);
-
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0)
-    {
-        syslog(LOG_ERR, "Failed to bind socket");
-        exit_with_cleanup();
-    }
-
-    if (listen(server_fd, 3) < 0)
-    {
-        syslog(LOG_ERR, "Failed to listen for connections");
-        exit_with_cleanup();
-    }
-    if (daemon_mode)
+    if (deamonize == 1)
     {
         pid_t pid = fork();
 
         if (pid < 0)
         {
-            printf("failed to fork\n");
-            close(server_fd);
-            fclose(file);
-            closelog();
+            printf("Failed to fork\n");
+            cleanup(NULL, sockfd, file);
             exit(EXIT_FAILURE);
         }
 
         if (pid > 0)
         {
-            printf("Running as a deamon\n");
+            printf("Running as a daemon\n");
             exit(EXIT_SUCCESS);
         }
 
@@ -251,18 +308,14 @@ int main(int argc, char *argv[])
         if (setsid() < 0)
         {
             printf("Failed to create SID for child\n");
-            close(server_fd);
-            fclose(file);
-            closelog();
+            cleanup(NULL, sockfd, file);
             exit(EXIT_FAILURE);
         }
 
         if (chdir("/") < 0)
         {
             printf("Unable to change directory to root\n");
-            close(server_fd);
-            fclose(file);
-            closelog();
+            cleanup(NULL, sockfd, file);
             exit(EXIT_FAILURE);
         }
 
@@ -270,44 +323,87 @@ int main(int argc, char *argv[])
         close(STDOUT_FILENO);
         close(STDERR_FILENO);
     }
-    syslog(LOG_INFO, "TCP server listening at port %d", ntohs(address.sin_port));
 
-    while (keep_running)
+    signal(SIGALRM, signalInterruptHandler);
+    alarm(10);
+    syslog(LOG_INFO, "TCP server listening at port %d", ntohs(addr.sin_port));
+    // printf("TCP server listening at port %d\n", ntohs(addr.sin_port));
+
+    int num_threads = 0;
+    Node *head = NULL;
+
+    while (1)
     {
-        struct sockaddr_in client_address;
-        socklen_t client_len = sizeof(client_address);
+        struct sockaddr_in client_addr;
+        socklen_t client_len = sizeof(client_addr);
 
-        int *client_fd = malloc(sizeof(int));
-        *client_fd = accept(server_fd, (struct sockaddr *)&client_address, &client_len);
-
-        if (*client_fd < 0)
+        int client_sockfd = accept(sockfd, (struct sockaddr *)&client_addr, &client_len);
+        if (client_sockfd == -1)
         {
-            if (errno == EINTR)
-            {
-                free(client_fd);
-                continue;
-            }
-            syslog(LOG_ERR, "Failed to accept connection");
-            free(client_fd);
-            break;
+            syslog(LOG_ERR, "Unable to accept the client's connection");
+            perror("Unable to accept the client's connection\n");
+            cleanup(head, sockfd, file);
+            return -1;
         }
 
-        char client_ip[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &client_address.sin_addr, client_ip, INET_ADDRSTRLEN);
-        syslog(LOG_INFO, "Accepted connection from %s", client_ip);
-
-        pthread_t thread_id;
-        if (pthread_create(&thread_id, NULL, handle_connection, client_fd) != 0)
+        client_info_t *client_info = malloc(sizeof(client_info_t));
+        if (client_info == NULL)
         {
-            syslog(LOG_ERR, "Failed to create thread");
-            close(*client_fd);
-            free(client_fd);
+            syslog(LOG_ERR, "Unable to allocate memory for client_info");
+            perror("Unable to allocate memory for client_info");
+            close(client_sockfd);
             continue;
         }
 
-        add_thread(thread_id, *client_fd);
+        client_info->client_sockfd = client_sockfd;
+        client_info->client_addr = client_addr;
+
+        Node *n = malloc(sizeof(Node));
+        if (n == NULL)
+        {
+            syslog(LOG_ERR, "Failed to allocate memory for thread");
+            perror("Failed to allocate memory for thread\n");
+            close(client_sockfd);
+            free(client_info);
+            continue;
+        }
+
+        if (pthread_create(&(n->tid), NULL, handle_client, (void *)client_info) != 0)
+        {
+            syslog(LOG_ERR, "Unable to create thread");
+            perror("Unable to create thread");
+            close(client_sockfd);
+            free(client_info);
+            continue;
+        }
+
+        n->next = head;
+        head = n;
+
+        num_threads++;
     }
 
-    cleanup();
+    // Cleanup in case the server loop exits (shouldn't happen in this case)
+    cleanup(head, sockfd, file);
+    return 0;
+}
+
+int main(int argc, char *argv[])
+{
+    int deamonize = 0;
+
+    for (int i = 1; i < argc; i++)
+    {
+        if (strcmp(argv[i], "-d") == 0)
+        {
+            deamonize = 1;
+        }
+    }
+
+    if (createTCPServer(deamonize) == -1)
+    {
+        printf("Error in running application\n");
+    }
+
     return 0;
 }
