@@ -1,35 +1,12 @@
-# Default Compiler
-CC = gcc
-# Compiler flags
-CFLAGS = -Wall -Werror -g -O0
-# Linker flags
-LDFLAGS = -lpthread
-# Object files
-OBJ=aesdsocket.o
-
-# Check if CROSS_COMPILE is set
-ifdef CROSS_COMPILE
-	CC=$(CROSS_COMPILE)gcc
-endif
-
-# Default target
+.DEFAULT_GOAL:=aesdsocket
+CC ?= $(CROSS_COMPILE)gcc
 all: aesdsocket
 
-aesdsocket: $(OBJ)
-	$(CC) -o $@ $^ $(CFLAGS) $(LDFLAGS)
+aesdsocket: aesdsocket.o
+	$(CC)  -o aesdsocket aesdsocket.o -pthread -lrt -Wl,--hash-style=gnu
 
-# Pattern rule for object files
-%.o: %.c
-	$(CC) -c -o $@ $< $(CFLAGS)
+aesdsocket.o: aesdsocket.c
+	$(CC) -o aesdsocket.o aesdsocket.c -c -std=gnu99 -W -Wall -pedantic 
 
-# Clean target
 clean:
-	rm -f $(OBJ) aesdsocket
-
-# Source Files
-SRCS = aesdsocket.c
-
-# Target Executable
-TARGET = aesdsocket
-
-.PHONY: all clean
+	rm -rf *.o *~ aesdsocket 
