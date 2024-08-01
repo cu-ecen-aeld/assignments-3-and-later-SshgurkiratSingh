@@ -1,4 +1,5 @@
-#!/bin/sh
+#! /bin/sh
+
 case "$1" in
 start)
     echo "Starting aesdsocket"
@@ -6,11 +7,12 @@ start)
     ;;
 stop)
     echo "Stopping aesdsocket"
-    start-stop-daemon -K -n aesdsocket -s SIGTERM
+    start-stop-daemon -K -n aesdsocket
     ;;
 *)
     echo "Usage: $0 {start|stop}"
     exit 1
     ;;
 esac
+
 exit 0
