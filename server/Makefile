@@ -1,12 +1,16 @@
-.DEFAULT_GOAL:=aesdsocket
-CC ?= $(CROSS_COMPILE)gcc
-all: aesdsocket
+CC ?= ${CROSS_COMPILE}gcc
+CFLAGS ?= -g -Wall -Werror
+CFLAGS += -DUSE_AESD_CHAR_DEVICE=1
+TARGET ?= aesdsocket
+LDFLAGS ?= -lpthread -lrt
 
-aesdsocket: aesdsocket.o
-	$(CC)  -o aesdsocket aesdsocket.o -pthread -lrt -Wl,--hash-style=gnu
+default: all
 
-aesdsocket.o: aesdsocket.c
-	$(CC) -o aesdsocket.o aesdsocket.c -c -std=gnu99 -W -Wall -pedantic 
+all: $(TARGET)
 
+$(TARGET): aesdsocket.c
+	${CC} $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
+.PHONY: clean
 clean:
-	rm -rf *.o *~ aesdsocket 
+	rm -f $(TARGET) *.o
