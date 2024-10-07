@@ -1,16 +1,35 @@
-CC ?= ${CROSS_COMPILE}gcc
-CFLAGS ?= -g -Wall -Werror
-CFLAGS += -DUSE_AESD_CHAR_DEVICE=1
-TARGET ?= aesdsocket
-LDFLAGS ?= -lpthread -lrt
+# Makefile for assignment5
 
-default: all
+#CROSS_COMPILE=aarch64-none-linux-gnu-
+#ARCH=arm64
+CC ?= $(CROSS_COMPILE)gcc
+CFLAGS ?= -Wall -Wextra -O2
+LDFLAGS ?= -lpthread -lrt
+TARGET ?= aesdsocket
+SRC := $(TARGET).c
+OBJ := $(SRC:.c=.o)
+
+ifeq ($(ARCH), arm64)
+	CFLAGS += -g
+endif
+
+.PHONY: all install clean
 
 all: $(TARGET)
 
-$(TARGET): aesdsocket.c
-	${CC} $(CFLAGS) $^ -o $@ $(LDFLAGS)
+#rule for compiling .c files
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@ -pthread
+	
+$(TARGET): $(OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(INCLUDES) $(LDFLAGS)
 
-.PHONY: clean
+#$(TARGET): $(TARGET).c
+#	$(CC) $(CFLAGS) -o $(TARGET) $(TARGET).c
+
+#rule for install software
+install: $(TARGET)
+	cp $(TARGET) $(OUT_DIR)
+
 clean:
-	rm -f $(TARGET) *.o
+	rm -f $(TARGET) $(OBJ)
