@@ -10,14 +10,16 @@
  * @copyright Copyright (c) 2019
  *
  */
-
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/printk.h>
 #include <linux/types.h>
 #include <linux/cdev.h>
-#include <linux/fs.h> // file_operations
+#include <linux/fs.h>    // file_operations
+#include <linux/slab.h>  // For kmalloc, kfree
+#include <linux/mutex.h> // For mutex
 #include "aesdchar.h"
+#include "aesd-circular-buffer.h"
 int aesd_major = 0; // use dynamic major
 int aesd_minor = 0;
 
