@@ -4,10 +4,20 @@ case "$1" in
 start)
     echo "Starting aesdsocket"
     start-stop-daemon -S -n aesdsocket -a /usr/bin/aesdsocket -- -d
+    if [ $? -eq 0 ]; then
+        echo "aesdsocket started"
+    else
+        echo "Failed to start aesdsocket"
+    fi
     ;;
 stop)
-    echo "Stopping aesdsocket"
+    echo "Stopping simpleserver"
     start-stop-daemon -K -n aesdsocket
+    if [ $? -eq 0 ]; then
+        echo "aesdsocket stopped"
+    else
+        echo "Failed to stop aesdsocket"
+    fi
     ;;
 *)
     echo "Usage: $0 {start|stop}"
