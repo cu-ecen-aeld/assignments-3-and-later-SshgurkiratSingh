@@ -1,0 +1,2 @@
+# Hashes of file build rules.
+4bf4789e58695ea17764b1a0f2f6e732 ../assignment-autotest/test/assignment1/Test_hello_Runner.c

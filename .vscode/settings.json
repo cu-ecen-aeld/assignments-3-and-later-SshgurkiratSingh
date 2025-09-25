@@ -1,0 +1,11 @@
+{
+    "files.associations": {
+        "*.tcc": "c",
+        "chrono": "c",
+        "cstdlib": "c",
+        "bitset": "c",
+        "system_error": "c",
+        "typeinfo": "c"
+    },
+    "cmake.configureOnOpen": false
+}
